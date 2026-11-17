@@ -13,7 +13,7 @@
     "deploy": "npm run build && wrangler deploy",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
-    "test": "node tests/local-integration.mjs"
+    "test": "npm run build && node tests/local-integration.mjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-sans-arabic": "^5.3.0",

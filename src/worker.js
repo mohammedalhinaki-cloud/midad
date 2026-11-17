@@ -52,7 +52,14 @@ function checkMutation(request) {
 function RiyadhDate(d = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Riyadh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
-function isWithin(start, end, date = RiyadhDate()) { return start <= date && date <= end; }
+function shiftRiyadhDate(date, offset) {
+  const [year,month,day]=date.split('-').map(Number);const shifted=new Date(Date.UTC(year,month-1,day+offset));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth()+1).padStart(2,'0')}-${String(shifted.getUTCDate()).padStart(2,'0')}`;
+}
+function riyadhReportWindow(days) {
+  const today=RiyadhDate();const startDate=shiftRiyadhDate(today,1-days);const endDate=shiftRiyadhDate(today,1);
+  return {start:iso(Date.parse(`${startDate}T00:00:00+03:00`)),end:iso(Date.parse(`${endDate}T00:00:00+03:00`))};
+}
 async function getActiveDay(env, book) {
   const now = Date.now();
   let day = await env.DB.prepare('SELECT * FROM reading_days WHERE book_id=? ORDER BY starts_at DESC LIMIT 1').bind(book.id).first();
@@ -178,6 +185,7 @@ async function api(request, env) {
   }
   const userMatch = path.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && ['PATCH','DELETE'].includes(method)) {
+    if(!requireRole(user,['assistant','super_admin']))return err('غير مصرح.',403);
     const target = await env.DB.prepare('SELECT * FROM users WHERE id=? AND deleted_at IS NULL').bind(userMatch[1]).first();
     if (!target) return err('الحساب غير موجود.',404);
     if (user.role === 'assistant' && target.role !== 'member') return err('غير مصرح.',403);
@@ -307,8 +315,19 @@ async function api(request, env) {
     const id=uid();await env.DB.prepare('INSERT INTO member_leaves(id,user_id,starts_on,ends_on,reason,created_by) VALUES(?,?,?,?,?,?)').bind(id,data.user_id,data.starts_on,data.ends_on,String(data.reason||'').slice(0,300),user.id).run();await audit(env,user.id,'grant_leave','member',data.user_id,{starts_on:data.starts_on,ends_on:data.ends_on});return json({id},201);
   }
   if(path==='/api/reports'&&method==='GET'){
-    if(!requireRole(user,['assistant','super_admin']))return err('غير مصرح.',403);const period=url.searchParams.get('period')==='week'?7:1;const since=iso(Date.now()-period*86400000);
-    const rows=await env.DB.prepare("SELECT u.id,u.name,COUNT(rc.id) AS completed FROM users u LEFT JOIN reading_completions rc ON rc.user_id=u.id AND rc.completed_at>=? WHERE u.role='member' AND u.deleted_at IS NULL GROUP BY u.id ORDER BY u.name COLLATE NOCASE").bind(since).all();const activeDays=await env.DB.prepare('SELECT COUNT(*) AS n FROM reading_days WHERE starts_at>=? AND paused=0').bind(since).first();const days=activeDays.n||0;const summary=(rows.results||[]).map(row=>({...row,percent:days?Math.round(row.completed*100/days):0}));return json({period,rows:summary,days,total_completions:summary.reduce((sum,row)=>sum+row.completed,0)});
+    if(!requireRole(user,['assistant','super_admin']))return err('غير مصرح.',403);
+    const period=url.searchParams.get('period')==='week'?7:1;const {start,end}=riyadhReportWindow(period);
+    const members=await env.DB.prepare("SELECT id,name,joined_at FROM users WHERE role='member' AND deleted_at IS NULL ORDER BY name COLLATE NOCASE").all();
+    const schedule=await env.DB.prepare('SELECT id,starts_at,paused FROM reading_days WHERE starts_at>=? AND starts_at<? ORDER BY starts_at').bind(start,end).all();
+    const completionRows=await env.DB.prepare('SELECT user_id,reading_day_id FROM reading_completions WHERE reading_day_id IN (SELECT id FROM reading_days WHERE starts_at>=? AND starts_at<?)').bind(start,end).all();
+    const leaves=await env.DB.prepare('SELECT user_id,starts_on,ends_on FROM member_leaves').all();
+    const completed=new Set((completionRows.results||[]).map(row=>`${row.user_id}:${row.reading_day_id}`));const leaveRows=leaves.results||[];
+    const readingDays=(schedule.results||[]).filter(row=>!row.paused);const rows=(members.results||[]).map(member=>{
+      const eligible=readingDays.filter(day=>day.starts_at>=member.joined_at&&!leaveRows.some(leave=>leave.user_id===member.id&&leave.starts_on<=RiyadhDate(new Date(day.starts_at))&&leave.ends_on>=RiyadhDate(new Date(day.starts_at))));
+      const count=eligible.filter(day=>completed.has(`${member.id}:${day.id}`)).length;
+      return {id:member.id,name:member.name,completed:count,percent:eligible.length?Math.round(count*100/eligible.length):0};
+    });
+    return json({period,rows,days:readingDays.length,total_completions:rows.reduce((sum,row)=>sum+row.completed,0),start_at:start,end_at:end});
   }
   if(path==='/api/audit'&&method==='GET'){
     if(user.role!=='super_admin')return err('غير مصرح.',403);const rows=await env.DB.prepare('SELECT a.*,u.name AS actor_name FROM audit_logs a JOIN users u ON u.id=a.actor_id ORDER BY a.occurred_at DESC LIMIT 200').all();return json({rows:rows.results||[]});
