@@ -65,7 +65,7 @@ try{
 
   const testPdf=makePdf(2);const parsedPdf=await pdfjs.getDocument({data:new Uint8Array(testPdf)}).promise;check('PDF.js parses the uploaded multi-page fixture',parsedPdf.numPages===2);await parsedPdf.getPage(2);
   const form=new FormData();form.set('title','كتاب الاختبار');form.set('page_count','2');form.set('start_page','1');form.set('end_page','2');form.set('pages_per_day','1');form.set('seconds_per_page','1');form.set('file',new Blob([testPdf],{type:'application/pdf'}),'fixture.pdf');
-  res=await request('/api/book','POST',form,assistantCookie);check('assistant uploads PDF to private R2',res.response.status===201);
+  res=await request('/api/book','POST',form,assistantCookie);const bookId=res.data.id;check('assistant uploads PDF to private R2',res.response.status===201);
   res=await request('/api/book/file');check('PDF is not public without a session',res.response.status===401);
   let assistantDash=await request('/api/dashboard','GET',undefined,assistantCookie);
   check('assistant dashboard lists status and book',assistantDash.response.status===200&&assistantDash.data.members.length===2&&assistantDash.data.day.page_start===1);
@@ -78,6 +78,8 @@ try{
   check('member dashboard shows today pages only',memberDash.response.status===200&&memberDash.data.day.page_start===1&&memberDash.data.members===undefined);
   res=await request('/api/members','GET',undefined,memberCookie);
   check('member cannot enumerate other members',res.response.status===403);
+  res=await request(`/api/users/${memberTwo}`,'PATCH',{name:'غير مصرح'},memberCookie);
+  check('member cannot edit their own or another member account',res.response.status===403);
   res=await request(`/api/history?user_id=${memberTwo}`,'GET',undefined,memberCookie);
   check('member history endpoint remains scoped to the signed-in member',res.response.status===200&&res.data.member===undefined);
   const pdf=await request('/api/book/file','GET',undefined,memberCookie);const pdfBytes=Buffer.from(await pdf.response.arrayBuffer());
@@ -106,6 +108,8 @@ try{
   memberTwoCookie=tokenFrom(memberTwoCookie.response);
   let memberTwoDash=await request('/api/dashboard','GET',undefined,memberTwoCookie);
   check('member receives a previous reading during the 48-hour grace period',!!memberTwoDash.data.late_day);
+  res=await request(`/api/history?user_id=${memberOne}`,'GET',undefined,memberTwoCookie);
+  check('member cannot see another member reading history',res.response.status===200&&res.data.rows.length===0);
   let memberRecord=await request(`/api/history?user_id=${memberTwo}`,'GET',undefined,assistantCookie);
   check('administrator member record includes missed-day alerts',memberRecord.response.status===200&&memberRecord.data.missed_count===1&&memberRecord.data.missed_days.length===1);
   res=await request('/api/reading/start','POST',{day_id:memberTwoDash.data.late_day.id},memberTwoCookie);
@@ -118,6 +122,9 @@ try{
   memberRecord=await request(`/api/history?user_id=${memberTwo}`,'GET',undefined,assistantCookie);
   check('member record includes joined date, percent, totals, and completion history',memberRecord.data.member.joined_at&&typeof memberRecord.data.commitment==='number'&&memberRecord.data.total_completed===1&&memberRecord.data.rows.length===1);
   check('late reading clears the missed-day warning',memberRecord.data.missed_count===0);
+  const dailyReport=await request('/api/reports?period=day','GET',undefined,assistantCookie);
+  const dailyMember=dailyReport.data.rows.find(row=>row.id===memberOne);
+  check('daily report uses Riyadh calendar-day windows and per-member eligible days',dailyReport.response.status===200&&dailyReport.data.days===2&&dailyReport.data.total_completions===2&&dailyMember?.percent===50);
 
   res=await request(`/api/users/${memberTwo}`,'PATCH',{status:'excluded',note:'اختبار'},assistantCookie);
   check('assistant can exclude a member without deleting history',res.response.status===200);
@@ -131,6 +138,13 @@ try{
   check('suspended account cannot establish a new session',res.response.status===401);
   res=await request(`/api/users/${memberOne}`,'PATCH',{status:'active'},assistantCookie);
   check('admin can reactivate a suspended account',res.response.status===200&&(await request('/api/session','GET',undefined,memberCookie)).data.user?.role==='member');
+  res=await request('/api/users','POST',{name:'عضو غائب',phone:'512345672',password:'MemberCode999',role:'member'},assistantCookie);
+  check('assistant can add a member for absence tracking',res.response.status===201);const absentMember=res.data.id;
+  const joinedBefore=new Date(Date.now()-5*86400000).toISOString();const missedSql=[`UPDATE users SET joined_at='${joinedBefore}' WHERE id='${absentMember}'`];
+  for(const [i,hours] of [26,50,74].entries()){const start=new Date(Date.now()-hours*3600000).toISOString();const end=new Date(Date.parse(start)+86400000).toISOString();const lock=new Date(Date.parse(start)+172800000).toISOString();missedSql.push(`INSERT INTO reading_days(id,book_id,starts_at,ends_at,locks_at,page_start,page_end,pages_json,paused) VALUES('qa-missed-${i}','${bookId}','${start}','${end}','${lock}',1,1,'[1]',0)`);}
+  wrangler(['d1','execute','midad-db','--local','--persist-to',state,'--command',missedSql.join(';')]);
+  const absenceDash=await request('/api/dashboard','GET',undefined,assistantCookie);const absenceMember=absenceDash.data.members.find(m=>m.id===absentMember);
+  check('three consecutive absences trigger the eligibility warning without auto-exclusion',absenceMember?.absence_streak>=3&&absenceMember.status==='active');
   res=await request('/api/reports?period=week','GET',undefined,assistantCookie);
   check('weekly report is available to assistant',res.response.status===200&&Array.isArray(res.data.rows));
   res=await request('/api/audit','GET',undefined,ownerCookie);
@@ -140,6 +154,8 @@ try{
   check('member is denied administrative reports',report.response.status===403);
   const html=await readFile(path.join(root,'index.html'),'utf8');const css=await readFile(path.join(root,'src','styles.css'),'utf8');
   check('mobile/RTL presentation is present in app shell',html.includes('lang="ar" dir="rtl"')&&css.includes('@media(max-width:650px)'));
+  res=await request(`/api/users/${memberOne}`,'DELETE',undefined,assistantCookie);
+  check('assistant cannot permanently delete a member',res.response.status===403);
   res=await request(`/api/users/${memberOne}`,'DELETE',undefined,ownerCookie);
   check('owner can hard-delete a member and personal history',res.response.status===200);
   res=await request(`/api/history?user_id=${memberOne}`,'GET',undefined,assistantCookie);
