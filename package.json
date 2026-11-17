@@ -1,0 +1,30 @@
+{
+  "name": "midad-reading-circle",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "cf:dev": "wrangler dev --ip 0.0.0.0",
+    "db:local": "wrangler d1 migrations apply midad-db --local",
+    "db:remote": "wrangler d1 migrations apply midad-db --remote",
+    "deploy": "npm run build && wrangler deploy",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "test": "node tests/local-integration.mjs"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-sans-arabic": "^5.3.0",
+    "pdfjs-dist": "^4.10.38",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.1",
+    "wrangler": "^4.163.0"
+  }
+}

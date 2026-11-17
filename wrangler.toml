@@ -1,0 +1,27 @@
+name = "midad-reading-circle"
+main = "src/worker.js"
+compatibility_date = "2026-11-17"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "midad-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BOOKS"
+bucket_name = "midad-private-books"
+
+[vars]
+SESSION_DAYS = "30"
+
+[dev]
+ip = "0.0.0.0"
+port = 8787
+local_protocol = "http"
